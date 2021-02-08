@@ -2,13 +2,16 @@
 
 namespace App\Http\Controllers;
 
-use App\DataTables\CustomerDataTable;
 use App\Http\Requests;
-use App\Http\Requests\CreateCustomerRequest;
-use App\Http\Requests\UpdateCustomerRequest;
+use App\Models\Employee;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Validator;
+use App\DataTables\CustomerDataTable;
 use App\Repositories\CustomerRepository;
-use Flash;
+use App\Http\Requests\CreateCustomerRequest;
 use App\Http\Controllers\AppBaseController;
+use App\Http\Requests\UpdateCustomerRequest;
+use App\Models\Customer;
 use Response;
 
 class CustomerController extends AppBaseController
@@ -29,7 +32,7 @@ class CustomerController extends AppBaseController
      */
     public function index(CustomerDataTable $customerDataTable)
     {
-        return $customerDataTable->render('customers.index');
+        return view('customers.index', ['customers' => $this->customerRepository->all()]);
     }
 
     /**
@@ -52,12 +55,23 @@ class CustomerController extends AppBaseController
     public function store(CreateCustomerRequest $request)
     {
         $input = $request->all();
-
+        if($request->hasFile('profile_picture')){
+            $profile_image = uniqid().time().'.'.$request->file('profile_picture')->extension();
+            $signature = uniqid().time().'.'.$request->file('signature')->extension();
+            $id_card = uniqid().time().'.'.$request->file('id_card_image')->extension();
+            $request->signature->move(public_path('customer/verification/signature'), $signature);
+            $request->id_card_image->move(public_path('customer/verification/idcard'), $id_card);
+            $request->profile_picture->move(public_path('customer/verification/profile'), $profile_image);
+            $input['signature'] = public_path('customer/verification/signature/').$signature;
+            $input['id_card_image'] = public_path('customer/verification/idcard/').$id_card;
+            $input['profile_picture'] = public_path('customer/verification/profile/').$profile_image;
+        }
         $customer = $this->customerRepository->create($input);
+        return redirect('/thank-you');
+    }
 
-        Flash::success('Your Application was successful');
-
-        return redirect(route('customers.thank.you'));
+    public function findEmployee($name){
+        return dd(Employee::getEmployee($name));
     }
 
     /**
@@ -72,7 +86,7 @@ class CustomerController extends AppBaseController
         $customer = $this->customerRepository->find($id);
 
         if (empty($customer)) {
-            Flash::error('Customer not found');
+
 
             return redirect(route('customers.index'));
         }
@@ -92,7 +106,7 @@ class CustomerController extends AppBaseController
         $customer = $this->customerRepository->find($id);
 
         if (empty($customer)) {
-            Flash::error('Customer not found');
+
 
             return redirect(route('customers.index'));
         }
@@ -113,16 +127,16 @@ class CustomerController extends AppBaseController
         $customer = $this->customerRepository->find($id);
 
         if (empty($customer)) {
-            Flash::error('Customer not found');
+
 
             return redirect(route('customers.index'));
         }
 
         $customer = $this->customerRepository->update($request->all(), $id);
 
-        Flash::success('Customer updated successfully.');
 
-        return redirect(route('customers.index'));
+
+        return redirect()->route('customers.index');
     }
 
     /**
@@ -137,15 +151,121 @@ class CustomerController extends AppBaseController
         $customer = $this->customerRepository->find($id);
 
         if (empty($customer)) {
-            Flash::error('Customer not found');
+
 
             return redirect(route('customers.index'));
         }
 
         $this->customerRepository->delete($id);
 
-        Flash::success('Customer deleted successfully.');
+
 
         return redirect(route('customers.index'));
     }
+    public function saveUserDetails(Request $request, Customer $user){
+        //save other fields then save image below
+        return $this->saveUserUploads($request, $user);
+    }
+    public function saveUserUploads(Request $request, Customer $user)
+    {
+        Validator::make($request, [
+                'filenames' => 'required',
+                'filenames.*' => 'mimes:png,jpeg',
+                'filenames' => 'max:10240',
+        ]);
+
+        if($request->hasfile('filenames'))
+         {
+            foreach($request->file('filenames') as $file)
+            {
+                $name = time().'.'.$file->extension();
+                $file->move(public_path().'/files/', $name);  //add correct path
+                $data[] = $name;
+            }
+         }
+         $file= new \File();
+         $file->filenames=json_encode($data);
+         $file->save();
+
+        return back()->with('success', 'Your data has been saved successfully');
+    }
+
+    public function viewCustomer(Request $request, $uuid){
+        $customer = collect($this->getUserByHash($uuid));
+        return view('customers.show', compact('customer') );
+
+    }
+
+    public  function getUserByHash($uuid){
+        foreach ($this->customerRepository->all() as $key => $user) {
+            if(hash('sha256', $user->id) === $uuid){
+                return $user;
+            }
+        }
+    }
+
+    public function DownloadUserUploads(Request $request, Customer $user)
+    {
+        $user_files = Customer::where('id', $request->id)->first('file1', 'file2', 'file3');
+        return $this->downloadAsZip($user_files);
+    }
+
+    public function getAllUsersUpload(Request $request, $user_id, $file_type)
+    {
+        $image = Customer::where('id', $request->user_id)->get();
+        $fileName = '';
+        switch ($fileName) {
+            case 'id_card':
+                $fileName = $image['id_card'];
+                break;
+            case 'signature':
+                $fileName = $image['signature'];
+                break;
+            case 'passport_photo':
+                $fileName = $image['passport_photo'];
+                break;
+            default:
+                $fileName = $image['passport_photo'];
+                break;
+        }
+        $file = public_path() . "/uploads/" . $fileName;
+
+        $content_type = $this->getContentType($file);
+        $headers = [
+            'Content-Type' => $content_type,
+        ];
+        return response()->download($file, 'filename.pdf', $headers);
+    }
+
+
+    public function getContentType($file)
+    {
+        $filename = basename($file);
+        $file_extension = strtolower(substr(strrchr($filename, "."), 1));
+
+        switch ($file_extension) {
+            case "gif":
+                $ctype = "image/gif";
+                break;
+            case "png":
+                $ctype = "image/png";
+                break;
+            case "jpeg":
+            case "jpg":
+                $ctype = "image/jpeg";
+                break;
+            case "svg":
+                $ctype = "image/svg+xml";
+                break;
+            default:
+        }
+
+        header('Content-type: ' . $ctype);
+    }
+
+
+    public function displayImages(Request $request,$id){
+        $user = Customer::where('id', $id)->get();
+    }
 }
+;
